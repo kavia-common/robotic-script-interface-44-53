@@ -87,9 +87,24 @@ class ScriptExecute(MethodView):
             for key, value in initial_context.items():
                 context.set_variable(key, value)
             
-            # Register plugin functions
+            # Register Delta plugin functions at root level (no prefix)
+            # Also register with 'delta.' prefix for backward compatibility
+            delta_plugin_obj = plugin_manager.get_plugin('delta')
+            if delta_plugin_obj:
+                delta_functions = delta_plugin_obj.get_functions()
+                for func_name, func in delta_functions.items():
+                    # Register at root level (e.g., MovP, ReadModbus)
+                    context.register_function(func_name, func)
+                    # Also register with 'delta.' prefix for backward compatibility
+                    context.register_function(f'delta.{func_name}', func)
+            
+            # Register delta plugin instance for legacy dot notation
+            context.register_plugin('delta', delta_plugin_obj)
+            
+            # Register other plugin functions (non-delta plugins keep their prefix)
             for func_name, func in plugin_manager.plugin_functions.items():
-                context.register_function(func_name, func)
+                if not func_name.startswith('delta.'):
+                    context.register_function(func_name, func)
             
             # Create and execute interpreter
             interpreter = LuaInterpreter(context)
