@@ -1,33 +1,45 @@
 -- Pick and Place Example
--- Demonstrates a complete pick and place operation
+-- Uses Delta API specification functions
 
 -- Home the robot
 delta.home()
 
--- Configure speed for smooth operation
-delta.set_speed(150)
-delta.set_acceleration(500)
+-- Configure speed using Delta API (percentage for joint movements)
+delta.SpdJ(50)  -- Set joint speed to 50%
+delta.AccJ(50)  -- Set joint acceleration to 50%
 
--- Open gripper
-delta.gripper_open()
+-- Configure linear speed for linear movements
+delta.SpdL(150)  -- Set linear speed to 150 mm/sec
+delta.AccL(500)  -- Set linear acceleration to 500 mm/sec²
 
--- Move to pick position (80mm, 80mm, -180mm)
-delta.moveto(80, 80, -180)
+-- Set global points for pick and place locations
+delta.SetGlobalPoint(10, "GL_Pick", 80, 80, -180, 0, 0, 0, 0, 0, 0, 0, 0, {0,0,0,0,0,0,0,0})
+delta.SetGlobalPoint(11, "GL_PickUp", 80, 80, -150, 0, 0, 0, 0, 0, 0, 0, 0, {0,0,0,0,0,0,0,0})
+delta.SetGlobalPoint(12, "GL_Place", -80, -80, -180, 0, 0, 0, 0, 0, 0, 0, 0, {0,0,0,0,0,0,0,0})
+delta.SetGlobalPoint(13, "GL_PlaceUp", -80, -80, -150, 0, 0, 0, 0, 0, 0, 0, 0, {0,0,0,0,0,0,0,0})
+
+-- Open gripper (using DO for gripper control)
+delta.DO(1, "OFF")
+
+-- Move to pick position using linear movement
+delta.MovL(10)
 
 -- Close gripper to grab object
-delta.gripper_close()
+delta.DO(1, "ON")
+delta.DELAY(0.5)  -- Wait for gripper to close
 
 -- Lift object
-delta.move_relative(0, 0, 30)
+delta.MovL(11)
 
 -- Move to place position
-delta.moveto(-80, -80, -180)
+delta.MovL(12)
 
 -- Release object
-delta.gripper_open()
+delta.DO(1, "OFF")
+delta.DELAY(0.5)
 
 -- Lift gripper
-delta.move_relative(0, 0, 30)
+delta.MovL(13)
 
 -- Return home
 delta.home()
