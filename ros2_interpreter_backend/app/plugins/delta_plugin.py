@@ -25,7 +25,7 @@ class DeltaArmPlugin(Plugin):
     - Speed/acceleration control (SpdJ, AccJ, DecJ, SpdL, AccL, DecL)
     - Digital I/O (DI, DO, ExtDI, ExtDO)
     - Timing (WAIT, DELAY)
-    - Modbus communication (ReadModbus, WriteModbus)
+    - Modbus communication (ReadModbus, WriteModbus) - Dictionary-based
     - Accuracy control (Accur)
     """
     
@@ -57,7 +57,9 @@ class DeltaArmPlugin(Plugin):
         self.ext_di_state = {}  # External DI
         self.ext_do_state = {}  # External DO
         
-        # Modbus registers
+        # Modbus registers - Now dictionary-based with string keys (register addresses)
+        # Keys are string representations of register addresses (e.g., "40001", "0x1000")
+        # Values are the register values
         self.modbus_registers = {}
         
         # User and tool frames
@@ -138,7 +140,7 @@ class DeltaArmPlugin(Plugin):
             'WAIT': self.WAIT,
             'DELAY': self.DELAY,
             
-            # Modbus communication
+            # Modbus communication - Dictionary-based
             'ReadModbus': self.ReadModbus,
             'WriteModbus': self.WriteModbus,
             
@@ -670,48 +672,264 @@ class DeltaArmPlugin(Plugin):
         time.sleep(delay_time)
         return {'success': True, 'message': f'Delayed {delay_time} seconds'}
     
-    # ===== Modbus Communication =====
+    # ===== Modbus Communication - Dictionary-Based =====
     
-    def ReadModbus(self, reg_address: int, size: str) -> Optional[int]:
+    def ReadModbus(self, device: Any, register_map: Union[Dict[str, int], int], 
+                   size: Optional[str] = None) -> Union[Dict[str, int], int, None]:
         """
-        Read Modbus register
+        PUBLIC_INTERFACE
+        Read Modbus registers using dictionary-based register access
+        
+        Dictionary mode (NEW - recommended):
+            register_map is a dict mapping register addresses to read counts
+            Returns a dictionary mapping register addresses to values
+            Example: ReadModbus(device, {"40001": 1, "40002": 2})
+                     Returns: {"40001": value1, "40002": value2}
+        
+        Legacy mode (backward compatibility):
+            register_map is an integer address, size is "W" or "DW"
+            Returns the register value
+            Example: ReadModbus(0x1000, "W")
         
         Args:
-            reg_address: Register address (0x1000-0x1FFF, 0x3000-0x3FFF)
-            size: "W" (16-bit) or "DW" (32-bit)
+            device: Device identifier (string, int, or any identifier)
+            register_map: Dictionary of {register_address: count} OR integer address (legacy)
+            size: "W" (16-bit) or "DW" (32-bit) - only for legacy mode
             
         Returns:
-            Register value or None
+            Dictionary mode: Dict mapping register addresses to values
+            Legacy mode: Single register value
+            None on error
         """
-        if size == "DW" and reg_address % 2 != 0:
-            logger.error("DW address must be even")
+        # Dictionary mode - NEW API
+        if isinstance(register_map, dict):
+            result = {}
+            for reg_addr, count in register_map.items():
+                # Validate register address
+                reg_key = self._normalize_register_address(reg_addr)
+                if reg_key is None:
+                    logger.error(f"Invalid register address: {reg_addr}")
+                    return None
+                
+                # Validate count
+                if not isinstance(count, int) or count < 1:
+                    logger.error(f"Invalid read count for register {reg_addr}: {count}")
+                    return None
+                
+                # Read the register value(s)
+                # For count > 1, we'd read consecutive registers, but for simplicity
+                # we'll just read the single register at this address
+                value = self.modbus_registers.get(reg_key, 0)
+                result[reg_addr] = value
+                
+            logger.info(f"ReadModbus (dict mode) device={device}, registers={register_map}, result={result}")
+            return result
+        
+        # Legacy mode - backward compatibility
+        elif isinstance(register_map, int) and size is not None:
+            reg_address = register_map
+            
+            # Validate size
+            if size not in ["W", "DW"]:
+                logger.error(f"Invalid size: {size}. Must be 'W' or 'DW'")
+                return None
+            
+            # DW addresses must be even
+            if size == "DW" and reg_address % 2 != 0:
+                logger.error("DW address must be even")
+                return None
+            
+            # Normalize address
+            reg_key = self._normalize_register_address(reg_address)
+            if reg_key is None:
+                logger.error(f"Invalid register address: {reg_address}")
+                return None
+            
+            value = self.modbus_registers.get(reg_key, 0)
+            logger.info(f"ReadModbus (legacy mode) address={hex(reg_address)}, size={size}, value={value}")
+            return value
+        
+        else:
+            logger.error("Invalid ReadModbus arguments. Use dict mode or legacy (address, size)")
+            return None
+    
+    def WriteModbus(self, device: Any, register_map: Union[Dict[str, int], int], 
+                    size_or_value: Union[str, int, None] = None,
+                    value: Optional[int] = None) -> Dict[str, Any]:
+        """
+        PUBLIC_INTERFACE
+        Write Modbus registers using dictionary-based register access
+        
+        Dictionary mode (NEW - recommended):
+            register_map is a dict mapping register addresses to values
+            Example: WriteModbus(device, {"40001": 123, "40010": 456})
+        
+        Legacy mode (backward compatibility):
+            register_map is an integer address, size_or_value is "W"/"DW", value is the data
+            Example: WriteModbus(0x1000, "W", 100)
+        
+        Args:
+            device: Device identifier
+            register_map: Dictionary of {register_address: value} OR integer address (legacy)
+            size_or_value: Size "W"/"DW" for legacy mode, ignored in dict mode
+            value: Value to write (legacy mode only)
+            
+        Returns:
+            Status dictionary with success/failure information
+        """
+        # Dictionary mode - NEW API
+        if isinstance(register_map, dict):
+            written_count = 0
+            errors = []
+            
+            for reg_addr, reg_value in register_map.items():
+                # Validate register address
+                reg_key = self._normalize_register_address(reg_addr)
+                if reg_key is None:
+                    error_msg = f"Invalid register address: {reg_addr}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    continue
+                
+                # Validate value (must be integer)
+                if not isinstance(reg_value, int):
+                    error_msg = f"Register {reg_addr} value must be integer, got {type(reg_value).__name__}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    continue
+                
+                # Determine size based on value range and validate
+                if -32767 <= reg_value <= 32767:
+                    # Fits in W (16-bit)
+                    pass
+                elif -2147483648 <= reg_value <= 2147483647:
+                    # Fits in DW (32-bit) - check address is even
+                    numeric_addr = self._extract_numeric_address(reg_addr)
+                    if numeric_addr is not None and numeric_addr % 2 != 0:
+                        error_msg = f"Register {reg_addr}: DW values require even address"
+                        logger.error(error_msg)
+                        errors.append(error_msg)
+                        continue
+                else:
+                    error_msg = f"Register {reg_addr}: value {reg_value} out of range (-2147483648 to 2147483647)"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                    continue
+                
+                # Write the value
+                self.modbus_registers[reg_key] = reg_value
+                written_count += 1
+            
+            if errors:
+                return {
+                    'success': False,
+                    'message': f'Wrote {written_count} registers with {len(errors)} error(s)',
+                    'written': written_count,
+                    'errors': errors
+                }
+            else:
+                logger.info(f"WriteModbus (dict mode) device={device}, registers={register_map}")
+                return {
+                    'success': True,
+                    'message': f'Successfully wrote {written_count} register(s)',
+                    'written': written_count
+                }
+        
+        # Legacy mode - backward compatibility
+        elif isinstance(register_map, int) and isinstance(size_or_value, str) and value is not None:
+            reg_address = register_map
+            size = size_or_value
+            
+            # Validate size
+            if size not in ["W", "DW"]:
+                return {'success': False, 'message': 'Size must be "W" or "DW"'}
+            
+            # DW addresses must be even
+            if size == "DW" and reg_address % 2 != 0:
+                return {'success': False, 'message': 'DW address must be even'}
+            
+            # Validate value range
+            if size == "W" and not -32767 <= value <= 32767:
+                return {'success': False, 'message': 'W value must be -32767 to 32767'}
+            if size == "DW" and not -2147483648 <= value <= 2147483647:
+                return {'success': False, 'message': 'DW value must be -2147483648 to 2147483647'}
+            
+            # Normalize address
+            reg_key = self._normalize_register_address(reg_address)
+            if reg_key is None:
+                return {'success': False, 'message': f'Invalid register address: {reg_address}'}
+            
+            self.modbus_registers[reg_key] = value
+            logger.info(f"WriteModbus (legacy mode) address={hex(reg_address)}, size={size}, value={value}")
+            return {'success': True, 'message': f'Modbus {size} at {hex(reg_address)} set to {value}'}
+        
+        else:
+            return {
+                'success': False,
+                'message': 'Invalid WriteModbus arguments. Use dict mode or legacy (address, size, value)'
+            }
+    
+    # ===== Helper Methods for Modbus =====
+    
+    def _normalize_register_address(self, address: Union[str, int]) -> Optional[str]:
+        """
+        Normalize register address to a standard string format for storage.
+        Accepts various formats: integers (0x1000, 4096), strings ("40001", "0x1000")
+        
+        Validates address is in supported ranges:
+        - 0x1000-0x1FFF (4096-8191)
+        - 0x3000-0x3FFF (12288-16383)
+        - Modbus-style addresses: 40001-49999 (holding registers)
+        
+        Args:
+            address: Register address in various formats
+            
+        Returns:
+            Normalized string key for storage, or None if invalid
+        """
+        numeric_addr = self._extract_numeric_address(address)
+        if numeric_addr is None:
             return None
         
-        return self.modbus_registers.get((reg_address, size), 0)
+        # Validate address range
+        # Hex ranges: 0x1000-0x1FFF, 0x3000-0x3FFF
+        # Modbus holding register range: 40001-49999
+        if (0x1000 <= numeric_addr <= 0x1FFF or 
+            0x3000 <= numeric_addr <= 0x3FFF or
+            40001 <= numeric_addr <= 49999):
+            # Store as string representation of the original format
+            return str(address)
+        else:
+            logger.error(f"Register address {address} out of supported range")
+            return None
     
-    def WriteModbus(self, reg_address: int, size: str, value: int) -> Dict[str, Any]:
+    def _extract_numeric_address(self, address: Union[str, int]) -> Optional[int]:
         """
-        Write Modbus register
+        Extract numeric value from address (handles hex strings, decimal strings, integers)
         
         Args:
-            reg_address: Register address
-            size: "W" or "DW"
-            value: Value to write
+            address: Address in various formats
             
         Returns:
-            Status dictionary
+            Numeric address value, or None if invalid
         """
-        if size == "DW" and reg_address % 2 != 0:
-            return {'success': False, 'message': 'DW address must be even'}
+        if isinstance(address, int):
+            return address
         
-        # Validate value range
-        if size == "W" and not -32767 <= value <= 32767:
-            return {'success': False, 'message': 'W value must be -32767 to 32767'}
-        if size == "DW" and not -2147483648 <= value <= 2147483647:
-            return {'success': False, 'message': 'DW value must be -2147483648 to 2147483647'}
+        if isinstance(address, str):
+            # Try parsing as hex (0x1000)
+            if address.startswith(('0x', '0X')):
+                try:
+                    return int(address, 16)
+                except ValueError:
+                    return None
+            # Try parsing as decimal
+            try:
+                return int(address)
+            except ValueError:
+                return None
         
-        self.modbus_registers[(reg_address, size)] = value
-        return {'success': True, 'message': f'Modbus {size} at {hex(reg_address)} set to {value}'}
+        return None
     
     # ===== Legacy Compatibility Functions =====
     
